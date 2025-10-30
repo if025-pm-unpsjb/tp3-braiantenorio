@@ -1,0 +1,1 @@
+~/setr/qemu/bin/qemu-system-arm -kernel ./build/build.elf -S -s -machine lm3s6965evb

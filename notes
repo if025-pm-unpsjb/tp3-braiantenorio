@@ -1,0 +1,6 @@
+~/setr/tools/qemu/bin/qemu-system-arm -kernel ./build/build.elf -S -s -machine lm3s6965evb
+
+
+
+
+Makefile.mine cambiar el example.app por lo que queres ejecutar
