@@ -28,6 +28,8 @@
 #include "osram128x64x4.h"
 #include "uart.h"
 #include "bitmap.h"
+#include <semphr.h>
+
 
 /*-----------------------------------------------------------*/
 
@@ -42,19 +44,18 @@
 #define mainFULL_SCALE                      ( 15 )
 #define ulSSI_FREQUENCY                     ( 3500000UL )
 
-#define SETR_ID		2
-
 /* Tasks periods. */
-#define TASK1_PERIOD 	4
-#define TASK2_PERIOD 	5
-#define TASK3_PERIOD 	8
+#define TASK1_PERIOD 	3000
+#define TASK2_PERIOD 	4000
+#define TASK3_PERIOD 	11000
 
 /* Tasks WCETs. */
-#define TASK1_WCET		1
-#define TASK2_WCET		1
-#define TASK3_WCET		2
+#define TASK1_WCET		1000
+#define TASK2_WCET		500
+#define TASK3_WCET		2000
 
-//int yPosition = 0;
+SemaphoreHandle_t xSemaphore;
+
 
 /*-----------------------------------------------------------*/
 
@@ -78,6 +79,8 @@ static void vBusyWait( TickType_t ticks );
  */
 static void prvTask( void* pvParameters );
 
+static void prvTask2( void* pvParameters );
+
 /*-----------------------------------------------------------*/
 
 /* Functions to access the OLED.  The one used depends on the dev kit
@@ -96,38 +99,6 @@ struct xTaskStruct {
 
 typedef struct xTaskStruct xTask;
 
-
-typedef struct {
-	xTask tasks[5];
-} setr;
-
-setr setrs[] = {
-	//1.
-    { { {1000, 4000}, {1000, 5000}, {2000, 8000} } },
-	//2.
-	{ { {1000, 4000}, {1000, 8000}, {2000, 9000} } },
-	// 3.
-	{ { {1000, 4000}, {1000, 6000}, {1000, 8000}, {3000, 13000} } },
-	// 4.
-	{ { {1000, 4000}, {2000, 7000}, {1000, 12000}, {2000, 14000} } },
-	// 5.
-	{ { {1000, 5000}, {1000, 9000}, {1000, 10000}, {2000, 15000}, {2000, 16000} } },
-	// 6.
-	{ { {1000, 6000}, {1000, 8000}, {2000, 11000}, {1000, 15000}, {2000, 17000} } },
-	// 7.
-	{ { {1000, 4000}, {1000, 7000}, {2000, 10000}, {2000, 14000} } },
-	// 8.
-	{ { {1000, 4000}, {1000, 8000}, {2000, 10000}, {2000, 14000} } },
-	// 9.
-	{ { {1000, 5000}, {1000, 8000}, {2000, 12000}, {1000, 15000}, {1000, 16000} } },
-	// 10.
-	{ { {1000, 5000}, {1000, 8000}, {1000, 12000}, {1000, 13000}, {2000, 16000} } }
-};
-
-
-xTask *actualSetr;
-
-
 xTask task1 = { TASK1_WCET, TASK1_PERIOD };
 xTask task2 = { TASK2_WCET, TASK2_PERIOD };
 xTask task3 = { TASK3_WCET, TASK3_PERIOD };
@@ -137,10 +108,18 @@ xTask task3 = { TASK3_WCET, TASK3_PERIOD };
  *************************************************************************/
 int main( void )
 {
-	actualSetr = setrs[SETR_ID+1].tasks;
-
 	/* Initialise the trace recorder. */
 	vTraceEnable( TRC_INIT );
+
+	xSemaphore = xSemaphoreCreateMutex();
+
+	xSemaphoreGive(xSemaphore);
+
+    if( xSemaphore == NULL )
+    {
+        /* There was insufficient FreeRTOS heap available for the semaphore to
+           be created successfully. */
+    }
 
     prvSetupHardware();
 
@@ -158,23 +137,15 @@ int main( void )
     /* Print Hello World! to the OLED display. */
     static char cMessage[ mainMAX_MSG_LEN ];
     sprintf(cMessage, "Hello World!");
-    //vOLEDStringDraw( cMessage, 0, 0, mainFULL_SCALE );
+    vOLEDStringDraw( cMessage, 0, 0, mainFULL_SCALE );
 
     /* Print "Start!" to the UART. */
     prvPrintString("Start!\n\r");
 
     /* Creates the periodic tasks. */
-
-
-    for(int i=1; i<=3;i++){
-    	char taskName[10];
-    	sprintf(taskName, "T%d",i);
-        xTaskCreate( prvTask, taskName, configMINIMAL_STACK_SIZE + 50, (void*) &actualSetr[i], configMAX_PRIORITIES - i, NULL );
-    }
-
-    //xTaskCreate( prvTask, "T1", configMINIMAL_STACK_SIZE + 50, (void*) &task1, configMAX_PRIORITIES - 1, NULL );
-    //xTaskCreate( prvTask, "T2", configMINIMAL_STACK_SIZE + 50, (void*) &task2, configMAX_PRIORITIES - 2, NULL );
-    //xTaskCreate( prvTask, "T3", configMINIMAL_STACK_SIZE + 50, (void*) &task3, configMAX_PRIORITIES - 3, NULL );
+    xTaskCreate( prvTask, "T1", configMINIMAL_STACK_SIZE + 50, (void*) &task1, configMAX_PRIORITIES - 1, NULL );
+    xTaskCreate( prvTask2, "T2", configMINIMAL_STACK_SIZE + 50, (void*) &task2, configMAX_PRIORITIES - 2, NULL );
+    xTaskCreate( prvTask, "T3", configMINIMAL_STACK_SIZE + 50, (void*) &task3, configMAX_PRIORITIES - 3, NULL );
 
     vTraceEnable( TRC_START );
 
@@ -239,15 +210,20 @@ void prvTask( void *pvParameters )
 
 	for( ;; )
 	{
-        sprintf( cMessage, "S %s - %u - %u \n\r", pcTaskGetTaskName( NULL ), uxReleaseCount, xTaskGetTickCount() );
+		sprintf( cMessage, "%s - %u\n\r", pcTaskGetTaskName( NULL ), uxReleaseCount );
 
         prvPrintString( cMessage );
 
-        vBusyWait( task->wcet - 100);
+        if( xSemaphoreTake( xSemaphore, ( TickType_t ) 2000 ) == pdTRUE )
+        {
+            vBusyWait( task->wcet );
 
-        sprintf( cMessage, "E %s - %u - %u \n\r", pcTaskGetTaskName( NULL ), uxReleaseCount, xTaskGetTickCount() );
+            xSemaphoreGive( xSemaphore );
+        }
+        else
+        {
 
-        prvPrintString( cMessage );
+        }
 
 		vTaskDelayUntil( &pxPreviousWakeTime, task->period );
 
@@ -256,6 +232,32 @@ void prvTask( void *pvParameters )
 
 	vTaskDelete( NULL );
 }
+
+void prvTask2( void *pvParameters )
+{
+	char cMessage[ mainMAX_MSG_LEN ];
+	unsigned int uxReleaseCount = 0;
+	TickType_t pxPreviousWakeTime = 0;
+	xTask *task = (xTask*) pvParameters;
+
+	for( ;; )
+	{
+		sprintf( cMessage, "%s - %u\n\r", pcTaskGetTaskName( NULL ), uxReleaseCount );
+
+        prvPrintString( cMessage );
+
+        vBusyWait( task->wcet );
+
+		vTaskDelayUntil( &pxPreviousWakeTime, task->period );
+
+		uxReleaseCount += 1;
+	}
+
+	vTaskDelete( NULL );
+}
+
+
+
 /*-----------------------------------------------------------*/
 
 void vAssertCalled( const char *pcFile, uint32_t ulLine )
